@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/gin-gonic/gin"
@@ -72,16 +73,31 @@ func CreateChatCompletions(c *gin.Context) {
 	}
 
 	uid := uuid.NewString()
-	err = chatgpt.InitWSConn(token, uid)
+	var chat_require *chatgpt.ChatRequire
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		err = chatgpt.InitWSConn(token, uid)
+	}()
+	go func() {
+		defer wg.Done()
+		chat_require = chatgpt.CheckRequire(token)
+	}()
+	wg.Wait()
 	if err != nil {
+		c.JSON(500, gin.H{"error": "unable to create ws tunnel"})
 		return
 	}
-	chat_require := chatgpt.CheckRequire(token)
+	if chat_require == nil {
+		c.JSON(500, gin.H{"error": "unable to check chat requirement"})
+		return
+	}
 
 	// Convert the chat request to a ChatGPT request
 	translated_request := convertAPIRequest(original_request, chat_require.Arkose.Required)
 
-	response, done := sendConversationRequest(c, translated_request, token)
+	response, done := sendConversationRequest(c, translated_request, token, chat_require.Token)
 	if done {
 		return
 	}
@@ -115,7 +131,7 @@ func CreateChatCompletions(c *gin.Context) {
 		if chat_require.Arkose.Required {
 			chatgpt.RenewTokenForRequest(&translated_request)
 		}
-		response, done = sendConversationRequest(c, translated_request, token)
+		response, done = sendConversationRequest(c, translated_request, token, chat_require.Token)
 
 		if done {
 			return
@@ -203,7 +219,7 @@ func NewChatGPTRequest() chatgpt.CreateConversationRequest {
 	}
 }
 
-func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string) (*http.Response, bool) {
+func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string, chat_token string) (*http.Response, bool) {
 	jsonBytes, _ := json.Marshal(request)
 	req, _ := http.NewRequest(http.MethodPost, api.ChatGPTApiUrlPrefix+"/backend-api/conversation", bytes.NewBuffer(jsonBytes))
 	req.Header.Set("Content-Type", "application/json")
@@ -213,8 +229,16 @@ func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationR
 	if request.ArkoseToken != "" {
 		req.Header.Set("Openai-Sentinel-Arkose-Token", request.ArkoseToken)
 	}
+	if chat_token != "" {
+		req.Header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token)
+	}
 	if api.PUID != "" {
-		req.Header.Set("Cookie", "_puid="+api.PUID)
+		req.Header.Set("Cookie", "_puid="+api.PUID+";")
+	}
+	req.Header.Set("Oai-Language", api.Language)
+	if api.OAIDID != "" {
+		req.Header.Set("Cookie", req.Header.Get("Cookie")+"oai-did="+api.OAIDID)
+		req.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
 	resp, err := api.Client.Do(req)
 	if err != nil {
@@ -245,6 +269,11 @@ func GetImageSource(wg *sync.WaitGroup, url string, prompt string, token string,
 	// Clear cookies
 	if api.PUID != "" {
 		request.Header.Set("Cookie", "_puid="+api.PUID+";")
+	}
+	request.Header.Set("Oai-Language", api.Language)
+	if api.OAIDID != "" {
+		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+api.OAIDID)
+		request.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
 	request.Header.Set("User-Agent", api.UserAgent)
 	request.Header.Set("Accept", "*/*")
@@ -291,6 +320,8 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 	var wssUrl string
 	var connInfo *api.ConnInfo
 	var wsSeq int
+	var isWSInterrupt bool = false
+	var interruptTimer *time.Timer
 
 	if !strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
 		isWSS = true
@@ -311,9 +342,21 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 		if isWSS {
 			var messageType int
 			var message []byte
+			if isWSInterrupt {
+				if interruptTimer == nil {
+					interruptTimer = time.NewTimer(10 * time.Second)
+				}
+				select {
+				case <-interruptTimer.C:
+					c.JSON(500, gin.H{"error": "WS interrupt & new WS timeout"})
+					return "", nil
+				default:
+					goto reader
+				}
+			}
+		reader:
 			messageType, message, err = connInfo.Conn.ReadMessage()
 			if err != nil {
-				println(err.Error())
 				connInfo.Ticker.Stop()
 				connInfo.Conn.Close()
 				connInfo.Conn = nil
@@ -322,6 +365,7 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 					c.JSON(500, gin.H{"error": err.Error()})
 					return "", nil
 				}
+				isWSInterrupt = true
 				connInfo.Conn.WriteMessage(websocket.TextMessage, []byte("{\"type\":\"sequenceAck\",\"sequenceId\":"+strconv.Itoa(wsSeq)+"}"))
 				continue
 			}
@@ -339,6 +383,10 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 				bodyByte, err := base64.StdEncoding.DecodeString(base64Body)
 				if err != nil {
 					continue
+				}
+				if isWSInterrupt {
+					isWSInterrupt = false
+					interruptTimer.Stop()
 				}
 				line = string(bodyByte)
 			}

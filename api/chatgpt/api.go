@@ -89,7 +89,12 @@ func sendConversationRequest(c *gin.Context, request CreateConversationRequest, 
 		req.Header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token)
 	}
 	if api.PUID != "" {
-		req.Header.Set("Cookie", "_puid="+api.PUID)
+		req.Header.Set("Cookie", "_puid="+api.PUID+";")
+	}
+	req.Header.Set("Oai-Language", api.Language)
+	if api.OAIDID != "" {
+		req.Header.Set("Cookie", req.Header.Get("Cookie")+"oai-did="+api.OAIDID)
+		req.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
 	resp, err := api.Client.Do(req)
 	if err != nil {
@@ -326,14 +331,10 @@ func getWSURL(token string, retry int) (string, error) {
 }
 
 func CreateWSConn(url string, connInfo *api.ConnInfo, retry int) error {
-	header := make(http2.Header)
-	header.Add("Sec-WebSocket-Protocol", "json.reliable.webpubsub.azure.v1")
-	dialer := websocket.Dialer{
-		Proxy:             http2.ProxyFromEnvironment,
-		HandshakeTimeout:  45 * time.Second,
-		EnableCompression: true,
-	}
-	conn, _, err := dialer.Dial(url, header)
+	dialer := websocket.DefaultDialer
+	dialer.EnableCompression = true
+	dialer.Subprotocols = []string{"json.reliable.webpubsub.azure.v1"}
+	conn, _, err := dialer.Dial(url, nil)
 	if err != nil {
 		if retry > 3 {
 			return err
@@ -451,6 +452,11 @@ func CheckRequire(access_token string) *ChatRequire {
 	}
 	if api.PUID != "" {
 		request.Header.Set("Cookie", "_puid="+api.PUID+";")
+	}
+	request.Header.Set("Oai-Language", api.Language)
+	if api.OAIDID != "" {
+		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+api.OAIDID)
+		request.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", api.UserAgent)
