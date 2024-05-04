@@ -1,8 +1,27 @@
 # go-chatgpt-api
 
 # 此为个人维护的魔改版，相比原版，有以下改动/区别
-Docker image: maxduke/go-chatgpt-api
+Docker image: maxduke/go-chatgpt-api:latest
 
+## 20240503
+后续计划移除imitate相关接口，有chat2api的需求的建议使用熊猫大佬的项目：
+
+https://github.com/xqdoo00o/ChatGPT-to-API
+
+## 20240501
+调整chatrequirement以及pow算法
+
+参照 https://github.com/xqdoo00o/ChatGPT-to-API/compare/d26911c672c9b0ce3c7928fec1109ff8539a34c1...89a038c3ca32bdbfdfcd2eff730aaaa9ff80ac7f
+## 20240426
+默认关闭 healthcheck, 如需要开启请配置新的环境变量
+  - ENABLE_HEALTHCHECK
+## 20240422 add POW
+## 20240416 fix 403 error
+添加新的环境变量
+  - CLIENT_PROFILE
+  - UA
+
+没需求不要动
 ## 20240320 fix 403 error
 ## 20240314 imitate 重构
  - 更新依赖 https://github.com/xqdoo00o/funcaptcha
@@ -33,11 +52,13 @@ Docker image: maxduke/go-chatgpt-api
 
 [har获取方式](https://github.com/xqdoo00o/ChatGPT-to-API/blob/master/README_ZH.md#har%E6%96%87%E4%BB%B6%E6%B1%A0)
 
-## 如何为3.5开启 ARKOSE TOKEN ？
-使用环境变量
- - ENABLE_ARKOSE_3=true
-
+## ~~如何为3.5开启 ARKOSE TOKEN ？~~
+~~使用环境变量~~
+ - ~~ENABLE_ARKOSE_3=true~~
 ---
+
+<details>
+<summary>原版 README.md</summary>
 
 ## 一个尝试绕过 `Cloudflare` 来使用 `ChatGPT` 接口的程序
 

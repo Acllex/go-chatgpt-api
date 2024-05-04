@@ -6,8 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -18,6 +18,7 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 
 	"github.com/maxduke/go-chatgpt-api/api"
 	"github.com/maxduke/go-chatgpt-api/api/chatgpt"
@@ -78,11 +79,11 @@ func CreateChatCompletions(c *gin.Context) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		err = chatgpt.InitWSConn(token, uid)
+		err = chatgpt.InitWSConn(token, api.OAIDID, uid)
 	}()
 	go func() {
 		defer wg.Done()
-		chat_require = chatgpt.CheckRequire(token)
+		chat_require = chatgpt.CheckRequire(token, api.OAIDID)
 	}()
 	wg.Wait()
 	if err != nil {
@@ -94,10 +95,15 @@ func CreateChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// Convert the chat request to a ChatGPT request
-	translated_request := convertAPIRequest(original_request, chat_require.Arkose.Required)
+	var proofToken string
+	if chat_require.Proof.Required {
+		proofToken = chatgpt.CalcProofToken(chat_require)
+	}
 
-	response, done := sendConversationRequest(c, translated_request, token, chat_require.Token)
+	// Convert the chat request to a ChatGPT request
+	translated_request := convertAPIRequest(original_request, chat_require.Arkose.Required, chat_require.Arkose.DX)
+
+	response, done := sendConversationRequest(c, translated_request, token, api.OAIDID, chat_require.Token, proofToken)
 	if done {
 		return
 	}
@@ -129,9 +135,9 @@ func CreateChatCompletions(c *gin.Context) {
 		translated_request.ConversationID = continue_info.ConversationID
 		translated_request.ParentMessageID = continue_info.ParentID
 		if chat_require.Arkose.Required {
-			chatgpt.RenewTokenForRequest(&translated_request)
+			chatgpt.RenewTokenForRequest(&translated_request, chat_require.Arkose.DX)
 		}
-		response, done = sendConversationRequest(c, translated_request, token, chat_require.Token)
+		response, done = sendConversationRequest(c, translated_request, token, api.OAIDID, chat_require.Token, proofToken)
 
 		if done {
 			return
@@ -173,7 +179,7 @@ func generateId() string {
 	return "chatcmpl-" + id
 }
 
-func convertAPIRequest(api_request APIRequest, requireArk bool) (chatgpt.CreateConversationRequest) {
+func convertAPIRequest(api_request APIRequest, requireArk bool, dx string) (chatgpt.CreateConversationRequest) {
 	chatgpt_request := NewChatGPTRequest()
 
 	var api_version int
@@ -182,23 +188,24 @@ func convertAPIRequest(api_request APIRequest, requireArk bool) (chatgpt.CreateC
 		chatgpt_request.Model = "text-davinci-002-render-sha"
 	} else if strings.HasPrefix(api_request.Model, "gpt-4") {
 		api_version = 4
-		chatgpt_request.Model = api_request.Model
-		// Cover some models like gpt-4-32k
-		if len(api_request.Model) >= 7 && api_request.Model[6] >= 48 && api_request.Model[6] <= 57 {
-			chatgpt_request.Model = "gpt-4"
-		}
+		chatgpt_request.Model = "gpt-4"
+		// TODO support gpts
+		// if len(api_request.Model) > 12 {
+		// 	key := api_request.Model[6:11]
+		// 	if key == "gizmo" {
+		// 		val := api_request.Model[12:]
+		// 		chatgpt_request.ConversationMode.Kind = "gizmo_interaction"
+		// 		chatgpt_request.ConversationMode.GizmoId = val
+		// 	}
+		// }
 	}
 	if requireArk {
-		token, err := api.GetArkoseToken(api_version)
+		token, err := api.GetArkoseToken(api_version, dx)
 		if err == nil {
 			chatgpt_request.ArkoseToken = token
 		} else {
 			fmt.Println("Error getting Arkose token: ", err)
 		}
-	}
-	if api_request.PluginIDs != nil {
-		chatgpt_request.PluginIDs = api_request.PluginIDs
-		chatgpt_request.Model = "gpt-4-plugins"
 	}
 	for _, api_message := range api_request.Messages {
 		if api_message.Role == "system" {
@@ -219,12 +226,11 @@ func NewChatGPTRequest() chatgpt.CreateConversationRequest {
 	}
 }
 
-func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string, chat_token string) (*http.Response, bool) {
+func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string, deviceId string, chat_token string, proofToken string) (*http.Response, bool) {
+	apiUrl := api.ChatGPTApiUrlPrefix+"/backend-api/conversation"
 	jsonBytes, _ := json.Marshal(request)
-	req, _ := http.NewRequest(http.MethodPost, api.ChatGPTApiUrlPrefix+"/backend-api/conversation", bytes.NewBuffer(jsonBytes))
+	req, err := chatgpt.NewRequest(http.MethodPost, apiUrl, bytes.NewReader(jsonBytes), accessToken, deviceId)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", api.UserAgent)
-	req.Header.Set(api.AuthorizationHeader, accessToken)
 	req.Header.Set("Accept", "text/event-stream")
 	if request.ArkoseToken != "" {
 		req.Header.Set("Openai-Sentinel-Arkose-Token", request.ArkoseToken)
@@ -232,13 +238,8 @@ func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationR
 	if chat_token != "" {
 		req.Header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token)
 	}
-	if api.PUID != "" {
-		req.Header.Set("Cookie", "_puid="+api.PUID+";")
-	}
-	req.Header.Set("Oai-Language", api.Language)
-	if api.OAIDID != "" {
-		req.Header.Set("Cookie", req.Header.Get("Cookie")+"oai-did="+api.OAIDID)
-		req.Header.Set("Oai-Device-Id", api.OAIDID)
+	if proofToken != "" {
+		req.Header.Set("Openai-Sentinel-Proof-Token", proofToken)
 	}
 	resp, err := api.Client.Do(req)
 	if err != nil {
@@ -272,7 +273,7 @@ func GetImageSource(wg *sync.WaitGroup, url string, prompt string, token string,
 	}
 	request.Header.Set("Oai-Language", api.Language)
 	if api.OAIDID != "" {
-		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+api.OAIDID)
+		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+api.OAIDID+";")
 		request.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
 	request.Header.Set("User-Agent", api.UserAgent)
@@ -425,6 +426,9 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 			if !(original_response.Message.Author.Role == "assistant" || (original_response.Message.Author.Role == "tool" && original_response.Message.Content.ContentType != "text")) || original_response.Message.Content.Parts == nil {
 				continue
 			}
+			if original_response.Message.Metadata.MessageType == "" {
+				continue
+			}
 			if original_response.Message.Metadata.MessageType != "next" && original_response.Message.Metadata.MessageType != "continue" || !strings.HasSuffix(original_response.Message.Content.ContentType, "text") {
 				continue
 			}
@@ -444,9 +448,18 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 					}
 				}
 				offset := 0
-				for i, citation := range original_response.Message.Metadata.Citations {
+				for _, citation := range original_response.Message.Metadata.Citations {
 					rl := len(r)
-					original_response.Message.Content.Parts[0] = string(r[:citation.StartIx+offset]) + "[^" + strconv.Itoa(i+1) + "^](" + citation.Metadata.URL + " \"" + citation.Metadata.Title + "\")" + string(r[citation.EndIx+offset:])
+					u, _ := url.Parse(citation.Metadata.URL)
+					baseURL := u.Scheme + "://" + u.Host + "/"
+					attr := urlAttrMap[baseURL]
+					if attr == "" {
+						attr = getURLAttribution(token, api.PUID, api.OAIDID, baseURL)
+						if attr != "" {
+							urlAttrMap[baseURL] = attr
+						}
+					}
+					original_response.Message.Content.Parts[0] = string(r[:citation.StartIx+offset]) + " ([" + attr + "](" + citation.Metadata.URL + " \"" + citation.Metadata.Title + "\"))" + string(r[citation.EndIx+offset:])
 					r = []rune(original_response.Message.Content.Parts[0].(string))
 					offset += len(r) - rl
 				}
@@ -531,4 +544,30 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 		ParentID:       original_response.Message.ID,
 	}
 
+}
+
+var urlAttrMap = make(map[string]string)
+
+type urlAttr struct {
+	Url         string `json:"url"`
+	Attribution string `json:"attribution"`
+}
+
+func getURLAttribution(access_token string, puid string, deviceId string, url string) string {
+	request, err := chatgpt.NewRequest(http.MethodPost, "https://chat.openai.com/backend-api/attributions", bytes.NewBuffer([]byte(`{"urls":["`+url+`"]}`)), access_token, deviceId)
+	if err != nil {
+		return ""
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := api.Client.Do(request)
+	if err != nil {
+		return ""
+	}
+	defer response.Body.Close()
+	var attr urlAttr
+	err = json.NewDecoder(response.Body).Decode(&attr)
+	if err != nil {
+		return ""
+	}
+	return attr.Attribution
 }
