@@ -14,6 +14,7 @@ import (
 	"net"
 	http2 "net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 	tls "github.com/bogdanfinn/utls"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/crypto/sha3"
@@ -32,18 +34,322 @@ import (
 )
 
 var (
+	autoContinue bool
 	answers             = map[string]string{}
-	cores               = []int{8, 12, 16, 24}
-	screens             = []int{3000, 4000, 6000}
 	timeLocation, _     = time.LoadLocation("Asia/Shanghai")
 	timeLayout          = "Mon Jan 2 2006 15:04:05"
+	cachedHardware = 0
 	cachedScripts       = []string{}
 	cachedDpl           = ""
+	cachedRequireProof = ""
+
+	PowRetryTimes = 0
+	PowMaxDifficulty = "000032"
+	powMaxCalcTimes = 500000
+	navigatorKeys = []string{"hardwareConcurrency−16", "login−[object NavigatorLogin]","presentation−[object Presentation]","managed−[object NavigatorManagedData]"}
+	documentKeys = []string{"location"}
+	windowKeys = []string{
+		"window",
+		"self",
+		"document",
+		"name",
+		"location",
+		"customElements",
+		"history",
+		"navigation",
+		"locationbar",
+		"menubar",
+		"personalbar",
+		"scrollbars",
+		"statusbar",
+		"toolbar",
+		"status",
+		"closed",
+		"frames",
+		"length",
+		"top",
+		"opener",
+		"parent",
+		"frameElement",
+		"navigator",
+		"origin",
+		"external",
+		"screen",
+		"innerWidth",
+		"innerHeight",
+		"scrollX",
+		"pageXOffset",
+		"scrollY",
+		"pageYOffset",
+		"visualViewport",
+		"screenX",
+		"screenY",
+		"outerWidth",
+		"outerHeight",
+		"devicePixelRatio",
+		"clientInformation",
+		"screenLeft",
+		"screenTop",
+		"styleMedia",
+		"onsearch",
+		"isSecureContext",
+		"trustedTypes",
+		"performance",
+		"onappinstalled",
+		"onbeforeinstallprompt",
+		"crypto",
+		"indexedDB",
+		"sessionStorage",
+		"localStorage",
+		"onbeforexrselect",
+		"onabort",
+		"onbeforeinput",
+		"onbeforematch",
+		"onbeforetoggle",
+		"onblur",
+		"oncancel",
+		"oncanplay",
+		"oncanplaythrough",
+		"onchange",
+		"onclick",
+		"onclose",
+		"oncontentvisibilityautostatechange",
+		"oncontextlost",
+		"oncontextmenu",
+		"oncontextrestored",
+		"oncuechange",
+		"ondblclick",
+		"ondrag",
+		"ondragend",
+		"ondragenter",
+		"ondragleave",
+		"ondragover",
+		"ondragstart",
+		"ondrop",
+		"ondurationchange",
+		"onemptied",
+		"onended",
+		"onerror",
+		"onfocus",
+		"onformdata",
+		"oninput",
+		"oninvalid",
+		"onkeydown",
+		"onkeypress",
+		"onkeyup",
+		"onload",
+		"onloadeddata",
+		"onloadedmetadata",
+		"onloadstart",
+		"onmousedown",
+		"onmouseenter",
+		"onmouseleave",
+		"onmousemove",
+		"onmouseout",
+		"onmouseover",
+		"onmouseup",
+		"onmousewheel",
+		"onpause",
+		"onplay",
+		"onplaying",
+		"onprogress",
+		"onratechange",
+		"onreset",
+		"onresize",
+		"onscroll",
+		"onsecuritypolicyviolation",
+		"onseeked",
+		"onseeking",
+		"onselect",
+		"onslotchange",
+		"onstalled",
+		"onsubmit",
+		"onsuspend",
+		"ontimeupdate",
+		"ontoggle",
+		"onvolumechange",
+		"onwaiting",
+		"onwebkitanimationend",
+		"onwebkitanimationiteration",
+		"onwebkitanimationstart",
+		"onwebkittransitionend",
+		"onwheel",
+		"onauxclick",
+		"ongotpointercapture",
+		"onlostpointercapture",
+		"onpointerdown",
+		"onpointermove",
+		"onpointerrawupdate",
+		"onpointerup",
+		"onpointercancel",
+		"onpointerover",
+		"onpointerout",
+		"onpointerenter",
+		"onpointerleave",
+		"onselectstart",
+		"onselectionchange",
+		"onanimationend",
+		"onanimationiteration",
+		"onanimationstart",
+		"ontransitionrun",
+		"ontransitionstart",
+		"ontransitionend",
+		"ontransitioncancel",
+		"onafterprint",
+		"onbeforeprint",
+		"onbeforeunload",
+		"onhashchange",
+		"onlanguagechange",
+		"onmessage",
+		"onmessageerror",
+		"onoffline",
+		"ononline",
+		"onpagehide",
+		"onpageshow",
+		"onpopstate",
+		"onrejectionhandled",
+		"onstorage",
+		"onunhandledrejection",
+		"onunload",
+		"crossOriginIsolated",
+		"scheduler",
+		"alert",
+		"atob",
+		"blur",
+		"btoa",
+		"cancelAnimationFrame",
+		"cancelIdleCallback",
+		"captureEvents",
+		"clearInterval",
+		"clearTimeout",
+		"close",
+		"confirm",
+		"createImageBitmap",
+		"fetch",
+		"find",
+		"focus",
+		"getComputedStyle",
+		"getSelection",
+		"matchMedia",
+		"moveBy",
+		"moveTo",
+		"open",
+		"postMessage",
+		"print",
+		"prompt",
+		"queueMicrotask",
+		"releaseEvents",
+		"reportError",
+		"requestAnimationFrame",
+		"requestIdleCallback",
+		"resizeBy",
+		"resizeTo",
+		"scroll",
+		"scrollBy",
+		"scrollTo",
+		"setInterval",
+		"setTimeout",
+		"stop",
+		"structuredClone",
+		"webkitCancelAnimationFrame",
+		"webkitRequestAnimationFrame",
+		"chrome",
+		"caches",
+		"cookieStore",
+		"ondevicemotion",
+		"ondeviceorientation",
+		"ondeviceorientationabsolute",
+		"launchQueue",
+		"documentPictureInPicture",
+		"getScreenDetails",
+		"queryLocalFonts",
+		"showDirectoryPicker",
+		"showOpenFilePicker",
+		"showSaveFilePicker",
+		"originAgentCluster",
+		"onpageswap",
+		"onpagereveal",
+		"credentialless",
+		"speechSynthesis",
+		"onscrollend",
+		"webkitRequestFileSystem",
+		"webkitResolveLocalFileSystemURL",
+		"sendMsgToSolverCS",
+		"webpackChunk_N_E",
+		"__next_set_public_path__",
+		"next",
+		"__NEXT_DATA__",
+		"__SSG_MANIFEST_CB",
+		"__NEXT_P",
+		"_N_E",
+		"regeneratorRuntime",
+		"__REACT_INTL_CONTEXT__",
+		"DD_RUM",
+		"_",
+		"filterCSS",
+		"filterXSS",
+		"__SEGMENT_INSPECTOR__",
+		"__NEXT_PRELOADREADY",
+		"Intercom",
+		"__MIDDLEWARE_MATCHERS",
+		"__STATSIG_SDK__",
+		"__STATSIG_JS_SDK__",
+		"__STATSIG_RERENDER_OVERRIDE__",
+		"_oaiHandleSessionExpired",
+		"__BUILD_MANIFEST",
+		"__SSG_MANIFEST",
+		"__intercomAssignLocation",
+		"__intercomReloadLocation"}
 )
+
+func init() {
+	autoContinue = os.Getenv("AUTO_CONTINUE") == "true"
+	cores := []int{8, 12, 16, 24}
+	screens := []int{3000, 4000, 6000}
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	core := cores[rand.Intn(4)]
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	screen := screens[rand.Intn(3)]
+	cachedHardware = core + screen
+	envHardware := os.Getenv("HARDWARE")
+	if envHardware != "" {
+		intValue, err := strconv.Atoi(envHardware)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Error converting %s to integer: %v", envHardware, err))
+		} else {
+			cachedHardware = intValue
+			logger.Info(fmt.Sprintf("cachedHardware is set to : %d", cachedHardware))
+		}
+	}
+	envPowRetryTimes := os.Getenv("POW_RETRY_TIMES")
+	if envPowRetryTimes != "" {
+		intValue, err := strconv.Atoi(envPowRetryTimes)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Error converting %s to integer: %v", envPowRetryTimes, err))
+		} else {
+			PowRetryTimes = intValue
+			logger.Info(fmt.Sprintf("PowRetryTimes is set to : %d", PowRetryTimes))
+		}
+	}
+	envpowMaxDifficulty := os.Getenv("POW_MAX_DIFFICULTY")
+	if envpowMaxDifficulty != "" {
+		PowMaxDifficulty = envpowMaxDifficulty
+		logger.Info(fmt.Sprintf("PowMaxDifficulty is set to : %s", PowMaxDifficulty))
+	}
+	envPowMaxCalcTimes := os.Getenv("POW_MAX_CALC_TIMES")
+	if envPowMaxCalcTimes != "" {
+		intValue, err := strconv.Atoi(envPowMaxCalcTimes)
+		if err != nil {
+			logger.Error(fmt.Sprintf("Error converting %s to integer: %v", envPowMaxCalcTimes, err))
+		} else {
+			powMaxCalcTimes = intValue
+			logger.Info(fmt.Sprintf("PowMaxCalcTimes is set to : %d", powMaxCalcTimes))
+		}
+	}
+}
 
 func CreateConversation(c *gin.Context) {
 	var request CreateConversationRequest
-	var api_version int
 
 	if err := c.BindJSON(&request); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, api.ReturnMessage(parseJsonErrorMessage))
@@ -63,27 +369,30 @@ func CreateConversation(c *gin.Context) {
 		request.Messages[0] = message
 	}
 
-	if strings.HasPrefix(request.Model, gpt4Model) {
-		api_version = 4
-	} else {
-		api_version = 3
-	}
-
 	// get accessToken
 	authHeader := c.GetHeader(api.AuthorizationHeader)
 	if strings.HasPrefix(authHeader, "Bearer") {
 		authHeader = strings.Replace(authHeader, "Bearer ", "", 1)
 	}
 	chat_require := CheckRequire(authHeader, api.OAIDID)
+	for i := 0; i < PowRetryTimes; i++ {		
+		if chat_require.Proof.Required && chat_require.Proof.Difficulty <= PowMaxDifficulty {
+			logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, PowRetryTimes))
+			chat_require = CheckRequire(authHeader, api.OAIDID)
+		} else {
+			break
+		}
+	}
 
-	if chat_require.Arkose.Required == true && request.ArkoseToken == "" {
-		arkoseToken, err := api.GetArkoseToken(api_version, chat_require.Arkose.DX)
+	var arkoseToken string
+	arkoseToken = c.GetHeader(api.ArkoseTokenHeader)
+	if chat_require.Arkose.Required == true && arkoseToken == "" {
+		token, err := GetArkoseTokenForModel(request.Model, chat_require.Arkose.DX)
+		arkoseToken = token
 		if err != nil || arkoseToken == "" {
 			c.AbortWithStatusJSON(http.StatusForbidden, api.ReturnMessage(err.Error()))
 			return
 		}
-
-		request.ArkoseToken = arkoseToken
 	}
 
 	var proofToken string
@@ -91,22 +400,25 @@ func CreateConversation(c *gin.Context) {
 		proofToken = CalcProofToken(chat_require)
 	}
 
-	resp, done := sendConversationRequest(c, request, authHeader, api.OAIDID, chat_require.Token, proofToken)
+	// TEST: force to use SSE
+	request.ForceUseSse = true
+
+	resp, done := sendConversationRequest(c, request, authHeader, api.OAIDID, arkoseToken, chat_require.Token, proofToken)
 	if done {
 		return
 	}
 
-	handleConversationResponse(c, resp, request, authHeader, api.OAIDID, chat_require.Token, proofToken, chat_require.Arkose.DX)
+	handleConversationResponse(c, resp, request, authHeader, api.OAIDID)
 }
 
-func sendConversationRequest(c *gin.Context, request CreateConversationRequest, accessToken string, deviceId string, chat_token string, proofToken string) (*http.Response, bool) {
+func sendConversationRequest(c *gin.Context, request CreateConversationRequest, accessToken string, deviceId string, arkoseToken string,  chat_token string, proofToken string) (*http.Response, bool) {
 	apiUrl := api.ChatGPTApiUrlPrefix+"/backend-api/conversation"
 	jsonBytes, _ := json.Marshal(request)
 	req, err := NewRequest(http.MethodPost, apiUrl, bytes.NewReader(jsonBytes), accessToken, deviceId)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	if request.ArkoseToken != "" {
-		req.Header.Set("Openai-Sentinel-Arkose-Token", request.ArkoseToken)
+	if arkoseToken != "" {
+		req.Header.Set("Openai-Sentinel-Arkose-Token", arkoseToken)
 	}
 	if chat_token != "" {
 		req.Header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token)
@@ -114,6 +426,12 @@ func sendConversationRequest(c *gin.Context, request CreateConversationRequest, 
 	if proofToken != "" {
 		req.Header.Set("Openai-Sentinel-Proof-Token", proofToken)
 	}
+	req.Header.Set("Origin", api.ChatGPTApiUrlPrefix)
+	if request.ConversationID != "" {
+		req.Header.Set("Referer", api.ChatGPTApiUrlPrefix+"/c/"+request.ConversationID)
+	} else {
+		req.Header.Set("Referer", api.ChatGPTApiUrlPrefix+"/")
+	}	
 	resp, err := api.Client.Do(req)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, api.ReturnMessage(err.Error()))
@@ -144,12 +462,15 @@ func sendConversationRequest(c *gin.Context, request CreateConversationRequest, 
 	return resp, false
 }
 
-func handleConversationResponse(c *gin.Context, resp *http.Response, request CreateConversationRequest, accessToken string, deviceId string, chat_token string, proofToken string, dx string) {
+func handleConversationResponse(c *gin.Context, resp *http.Response, request CreateConversationRequest, accessToken string, deviceId string) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 
 	isMaxTokens := false
 	continueParentMessageID := ""
 	continueConversationID := ""
+
+	var arkoseToken string
+	var proofToken string
 
 	defer resp.Body.Close()
 	reader := bufio.NewReader(resp.Body)
@@ -257,7 +578,7 @@ func handleConversationResponse(c *gin.Context, resp *http.Response, request Cre
 			}
 
 			responseJson := line[6:]
-			if strings.HasPrefix(responseJson, "[DONE]") && isMaxTokens && request.AutoContinue {
+			if strings.HasPrefix(responseJson, "[DONE]") && isMaxTokens && autoContinue {
 				continue
 			}
 
@@ -278,23 +599,51 @@ func handleConversationResponse(c *gin.Context, resp *http.Response, request Cre
 		}
 	}
 
-	if isMaxTokens && request.AutoContinue {
+	if isMaxTokens && autoContinue {
+		logger.Info("Continuing conversation")
 		continueConversationRequest := CreateConversationRequest{
+			ConversationMode:           request.ConversationMode,
+			ForceNulligen:              request.ForceNulligen,
+			ForceParagen:               request.ForceParagen,
+			ForceParagenModelSlug:      request.ForceParagenModelSlug,
+			ForceRateLimit:             request.ForceRateLimit,
+			ForceUseSse:                request.ForceUseSse,
 			HistoryAndTrainingDisabled: request.HistoryAndTrainingDisabled,
 			Model:                      request.Model,
+			ResetRateLimits:            request.ResetRateLimits,
 			TimezoneOffsetMin:          request.TimezoneOffsetMin,
 
 			Action:          actionContinue,
 			ParentMessageID: continueParentMessageID,
 			ConversationID:  continueConversationID,
+			WebsocketRequestId: uuid.NewString(),
 		}
-		RenewTokenForRequest(&continueConversationRequest, dx)
-		resp, done := sendConversationRequest(c, continueConversationRequest, accessToken, deviceId, chat_token, proofToken)
+		chat_require := CheckRequire(accessToken, deviceId)
+		for i := 0; i < PowRetryTimes; i++ {		
+			if chat_require.Proof.Required && chat_require.Proof.Difficulty <= PowMaxDifficulty {
+				logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, PowRetryTimes))
+				chat_require = CheckRequire(accessToken, api.OAIDID)
+			} else {
+				break
+			}
+		}
+ 		if chat_require.Proof.Required {
+ 			proofToken = CalcProofToken(chat_require)
+ 		}
+		if chat_require.Arkose.Required {
+			token, err := GetArkoseTokenForModel(continueConversationRequest.Model, chat_require.Arkose.DX)
+			arkoseToken = token
+			if err != nil || arkoseToken == "" {
+				c.AbortWithStatusJSON(http.StatusForbidden, api.ReturnMessage(err.Error()))
+				return
+			}
+		}
+		resp, done := sendConversationRequest(c, continueConversationRequest, accessToken, deviceId, arkoseToken, chat_require.Token, proofToken)
 		if done {
 			return
 		}
 
-		handleConversationResponse(c, resp, continueConversationRequest, accessToken, deviceId, chat_token, proofToken, dx)
+		handleConversationResponse(c, resp, continueConversationRequest, accessToken, deviceId)
 	}
 }
 
@@ -305,12 +654,12 @@ func NewRequest(method string, url string, body io.Reader, token string, deviceI
 	}
 	request.Header.Set("User-Agent", api.UserAgent)
 	request.Header.Set("Accept", "*/*")
-	request.Header.Set("Oai-Device-Id", deviceId)
 	if deviceId != "" {
 		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+deviceId+";")
 		request.Header.Set("Oai-Device-Id", deviceId)
 	}
 	request.Header.Set("Oai-Language", api.Language)
+	request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-dm-tgt-c-240329=2024-04-02;")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -324,7 +673,7 @@ func NewRequest(method string, url string, body io.Reader, token string, deviceI
 }
 
 func getWSURL(token string, deviceId string, retry int) (string, error) {
-	request, err := NewRequest(http.MethodPost, "https://chat.openai.com/backend-api/register-websocket", nil, token, deviceId)
+	request, err := NewRequest(http.MethodPost, api.ChatGPTApiUrlPrefix+"/backend-api/register-websocket", nil, token, deviceId)
 	if err != nil {
 		return "", err
 	}
@@ -357,7 +706,7 @@ type rawDialer interface {
 func CreateWSConn(addr string, connInfo *api.ConnInfo, retry int) error {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 8 * time.Second,
-		NetDialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		NetDialTLSContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
 			host, _, _ := net.SplitHostPort(addr)
 			config := &tls.Config{ServerName: host, OmitEmptyPsk: true}
 			var rawDial rawDialer
@@ -367,7 +716,7 @@ func CreateWSConn(addr string, connInfo *api.ConnInfo, retry int) error {
 			} else {
 				rawDial = &net.Dialer{}
 			}
-			dialConn, err := rawDial.Dial("tcp", addr)
+			dialConn, err := rawDial.Dial(network, addr)
 			if err != nil {
 				return nil, err
 			}
@@ -487,15 +836,19 @@ func InitWSConn(token string, deviceId string, uuid string) error {
 }
 
 func CheckRequire(access_token string, deviceId string) *ChatRequire {
-	proof, hardware := generateAnswer(strconv.FormatFloat(rand.Float64(), 'f', -1, 64), "0", 0)
-	body := bytes.NewBuffer([]byte(`{"p":"` + "gAAAAAC" + proof + `"}`))
+	if cachedRequireProof == "" {
+		cachedRequireProof = "gAAAAAC" + generateAnswer(strconv.FormatFloat(rand.Float64(), 'f', -1, 64), "0")
+	}
+	body := bytes.NewBuffer([]byte(`{"p":"` + cachedRequireProof + `"}`))
 	var apiUrl string
-	apiUrl = "https://chat.openai.com/backend-api/sentinel/chat-requirements"
+	apiUrl = api.ChatGPTApiUrlPrefix+"/backend-api/sentinel/chat-requirements"
 	request, err := NewRequest(http.MethodPost, apiUrl, body, access_token, deviceId)
 	if err != nil {
 		return nil
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", api.ChatGPTApiUrlPrefix)
+	request.Header.Set("Referer", api.ChatGPTApiUrlPrefix+"/")
 	response, err := api.Client.Do(request)
 	if err != nil {
 		return nil
@@ -506,7 +859,6 @@ func CheckRequire(access_token string, deviceId string) *ChatRequire {
 	if err != nil {
 		return nil
 	}
-	require.Hardware = hardware
 	return &require
 }
 
@@ -521,27 +873,29 @@ func getParseTime() string {
 	now = now.In(timeLocation)
 	return now.Format(timeLayout) + " GMT+0800 (中国标准时间)"
 }
-func getDpl() bool {
-	if len(cachedScripts) != 0 {
-		return true
+func GetDpl() {
+	if len(cachedScripts) > 0 {
+		return
 	}
-	request, err := http.NewRequest(http.MethodGet, "https://chat.openai.com/", nil)
+	cachedScripts = append(cachedScripts, "https://cdn.oaistatic.com/_next/static/chunks/9598-0150caea9526d55d.js?dpl=abad631f183104e6c8a323392d7bc30b933c5c7c")
+	cachedDpl = "dpl=abad631f183104e6c8a323392d7bc30b933c5c7c"
+	request, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/?oai-dm=1", nil)
 	request.Header.Set("User-Agent", api.UserAgent)
 	request.Header.Set("Accept", "*/*")
 	if err != nil {
-		return false
+		return
 	}
 	response, err := api.Client.Do(request)
 	if err != nil {
-		return false
+		return
 	}
 	defer response.Body.Close()
 	doc, _ := goquery.NewDocumentFromReader(response.Body)
-	cachedScripts = nil
+	scripts := []string{}
 	doc.Find("script[src]").Each(func(i int, s *goquery.Selection) {
 		src, exists := s.Attr("src")
 		if exists {
-			cachedScripts = append(cachedScripts, src)
+			scripts = append(scripts, src)
 			if cachedDpl == "" {
 				idx := strings.Index(src, "dpl")
 				if idx >= 0 {
@@ -550,58 +904,58 @@ func getDpl() bool {
 			}
 		}
 	})
-	return len(cachedScripts) != 0
-}
-func getConfig(hardware int) []interface{} {
-	if hardware == 0 {
-		rand.New(rand.NewSource(time.Now().UnixNano()))
-		core := cores[rand.Intn(4)]
-		rand.New(rand.NewSource(time.Now().UnixNano()))
-		screen := screens[rand.Intn(3)]
-		hardware = core + screen
+	if len(scripts) != 0 {
+		cachedScripts = scripts
 	}
+}
+func getConfig() []interface{} {	
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 	script := cachedScripts[rand.Intn(len(cachedScripts))]
-	return []interface{}{hardware, getParseTime(), int64(4294705152), 0, api.UserAgent, script, cachedDpl, "zh-CN", "zh-CN,en,en-GB,en-US"}
+	timeNum := (float64(time.Since(api.StartTime).Nanoseconds()) + rand.Float64()) / 1e6
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	navigatorKey := navigatorKeys[rand.Intn(len(navigatorKeys))]
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	documentKey := documentKeys[rand.Intn(len(documentKeys))]
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	windowKey := windowKeys[rand.Intn(len(windowKeys))]
+	return []interface{}{cachedHardware, getParseTime(), int64(4294705152), 0, api.UserAgent, script, cachedDpl, api.Language, api.Language+","+api.Language[:2], 0, navigatorKey, documentKey, windowKey, timeNum}
 }
 
 func CalcProofToken(require *ChatRequire) string {
-	proof, _ := generateAnswer(require.Proof.Seed, require.Proof.Difficulty, require.Hardware)
+    start := time.Now()
+	proof := generateAnswer(require.Proof.Seed, require.Proof.Difficulty)
+    elapsed := time.Since(start)
+    // POW logging
+	logger.Info(fmt.Sprintf("POW Difficulty: %s , took %v ms", require.Proof.Difficulty, elapsed.Milliseconds()))
 	return "gAAAAAB" + proof
 }
 
-func generateAnswer(seed string, diff string, hardware int) (string, int) {
-	if !getDpl() {
-		return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`)), 0
-	}
-	config := getConfig(hardware)
+func generateAnswer(seed string, diff string) string {
+	GetDpl()
+	config := getConfig()
 	diffLen := len(diff)
 	hasher := sha3.New512()
-	for i := 0; i < 1000000; i++ {
+	for i := 0; i < powMaxCalcTimes; i++ {
 		config[3] = i
+		config[9] = (i + 2) / 2
 		json, _ := json.Marshal(config)
 		base := base64.StdEncoding.EncodeToString(json)
 		hasher.Write([]byte(seed + base))
 		hash := hasher.Sum(nil)
 		hasher.Reset()
 		if hex.EncodeToString(hash[:diffLen])[:diffLen] <= diff {
-			return base, config[0].(int)
+			return base
 		}
 	}
-	return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`)), config[0].(int)
+	return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`))
 }
 
-func RenewTokenForRequest(request *CreateConversationRequest, dx string) {
+func GetArkoseTokenForModel(model string, dx string) (string, error) {
 	var api_version int
-	if strings.HasPrefix(request.Model, "gpt-4") {
+	if strings.HasPrefix(model, "gpt-4") {
 		api_version = 4
 	} else {
 		api_version = 3
 	}
-	token, err := api.GetArkoseToken(api_version, dx)
-	if err == nil {
-		request.ArkoseToken = token
-	} else {
-		fmt.Println("Error getting Arkose token: ", err)
-	}
+	return api.GetArkoseToken(api_version, dx)
 }

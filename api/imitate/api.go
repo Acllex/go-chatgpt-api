@@ -28,6 +28,7 @@ import (
 var (
 	reg *regexp.Regexp
 	token string
+	gptsRegexp = regexp.MustCompile(`-gizmo-g-(\w+)`)
 )
 
 func init() {
@@ -84,6 +85,14 @@ func CreateChatCompletions(c *gin.Context) {
 	go func() {
 		defer wg.Done()
 		chat_require = chatgpt.CheckRequire(token, api.OAIDID)
+		for i := 0; i < chatgpt.PowRetryTimes; i++ {		
+			if chat_require.Proof.Required && chat_require.Proof.Difficulty <= chatgpt.PowMaxDifficulty {
+				logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, chatgpt.PowRetryTimes))
+				chat_require = chatgpt.CheckRequire(token, api.OAIDID)
+			} else {
+				break
+			}
+		}
 	}()
 	wg.Wait()
 	if err != nil {
@@ -100,10 +109,20 @@ func CreateChatCompletions(c *gin.Context) {
 		proofToken = chatgpt.CalcProofToken(chat_require)
 	}
 
-	// Convert the chat request to a ChatGPT request
-	translated_request := convertAPIRequest(original_request, chat_require.Arkose.Required, chat_require.Arkose.DX)
+	var arkoseToken string
+	if chat_require.Arkose.Required {
+		token, err := chatgpt.GetArkoseTokenForModel(original_request.Model, chat_require.Arkose.DX)
+		arkoseToken = token
+		if err != nil || arkoseToken == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, api.ReturnMessage(err.Error()))
+			return
+		}
+	}
 
-	response, done := sendConversationRequest(c, translated_request, token, api.OAIDID, chat_require.Token, proofToken)
+	// Convert the chat request to a ChatGPT request
+	translated_request := convertAPIRequest(original_request)
+
+	response, done := sendConversationRequest(c, translated_request, token, api.OAIDID, arkoseToken, chat_require.Token, proofToken)
 	if done {
 		return
 	}
@@ -129,15 +148,32 @@ func CreateChatCompletions(c *gin.Context) {
 		if continue_info == nil {
 			break
 		}
-		println("Continuing conversation")
+		logger.Info("Continuing conversation")
 		translated_request.Messages = nil
 		translated_request.Action = "continue"
 		translated_request.ConversationID = continue_info.ConversationID
 		translated_request.ParentMessageID = continue_info.ParentID
-		if chat_require.Arkose.Required {
-			chatgpt.RenewTokenForRequest(&translated_request, chat_require.Arkose.DX)
+		chat_require = chatgpt.CheckRequire(token, api.OAIDID)
+		for i := 0; i < chatgpt.PowRetryTimes; i++ {		
+			if chat_require.Proof.Required && chat_require.Proof.Difficulty <= chatgpt.PowMaxDifficulty {
+				logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, chatgpt.PowRetryTimes))
+				chat_require = chatgpt.CheckRequire(token, api.OAIDID)
+			} else {
+				break
+			}
 		}
-		response, done = sendConversationRequest(c, translated_request, token, api.OAIDID, chat_require.Token, proofToken)
+ 		if chat_require.Proof.Required {
+ 			proofToken = chatgpt.CalcProofToken(chat_require)
+ 		}
+		if chat_require.Arkose.Required {
+			arkoseToken, err := chatgpt.GetArkoseTokenForModel(translated_request.Model, chat_require.Arkose.DX)
+			arkoseToken = token
+			if err != nil || arkoseToken == "" {
+				c.AbortWithStatusJSON(http.StatusForbidden, api.ReturnMessage(err.Error()))
+				return
+			}
+		}
+		response, done = sendConversationRequest(c, translated_request, token, api.OAIDID, arkoseToken, chat_require.Token, proofToken)
 
 		if done {
 			return
@@ -179,34 +215,23 @@ func generateId() string {
 	return "chatcmpl-" + id
 }
 
-func convertAPIRequest(api_request APIRequest, requireArk bool, dx string) (chatgpt.CreateConversationRequest) {
+func convertAPIRequest(api_request APIRequest) (chatgpt.CreateConversationRequest) {
 	chatgpt_request := NewChatGPTRequest()
 
-	var api_version int
 	if strings.HasPrefix(api_request.Model, "gpt-3.5") {
-		api_version = 3
 		chatgpt_request.Model = "text-davinci-002-render-sha"
 	} else if strings.HasPrefix(api_request.Model, "gpt-4") {
-		api_version = 4
 		chatgpt_request.Model = "gpt-4"
-		// TODO support gpts
-		// if len(api_request.Model) > 12 {
-		// 	key := api_request.Model[6:11]
-		// 	if key == "gizmo" {
-		// 		val := api_request.Model[12:]
-		// 		chatgpt_request.ConversationMode.Kind = "gizmo_interaction"
-		// 		chatgpt_request.ConversationMode.GizmoId = val
-		// 	}
-		// }
-	}
-	if requireArk {
-		token, err := api.GetArkoseToken(api_version, dx)
-		if err == nil {
-			chatgpt_request.ArkoseToken = token
-		} else {
-			fmt.Println("Error getting Arkose token: ", err)
+		if strings.HasPrefix(api_request.Model, "gpt-4o") {
+			chatgpt_request.Model = "gpt-4o"
 		}
 	}
+	matches := gptsRegexp.FindStringSubmatch(api_request.Model)
+	if len(matches) == 2 {
+		chatgpt_request.ConversationMode.Kind = "gizmo_interaction"
+		chatgpt_request.ConversationMode.GizmoId = "g-" + matches[1]
+	}
+
 	for _, api_message := range api_request.Messages {
 		if api_message.Role == "system" {
 			api_message.Role = "critic"
@@ -222,18 +247,21 @@ func NewChatGPTRequest() chatgpt.CreateConversationRequest {
 		Action:                     "next",
 		ParentMessageID:            uuid.NewString(),
 		Model:                      "text-davinci-002-render-sha",
+		ForceUseSse:                true,
 		HistoryAndTrainingDisabled: disable_history,
+		ConversationMode:           chatgpt.ConvMode{Kind: "primary_assistant"},
+		WebsocketRequestId:         uuid.NewString(),
 	}
 }
 
-func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string, deviceId string, chat_token string, proofToken string) (*http.Response, bool) {
+func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationRequest, accessToken string, deviceId string, arkoseToken string, chat_token string, proofToken string) (*http.Response, bool) {
 	apiUrl := api.ChatGPTApiUrlPrefix+"/backend-api/conversation"
 	jsonBytes, _ := json.Marshal(request)
 	req, err := chatgpt.NewRequest(http.MethodPost, apiUrl, bytes.NewReader(jsonBytes), accessToken, deviceId)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	if request.ArkoseToken != "" {
-		req.Header.Set("Openai-Sentinel-Arkose-Token", request.ArkoseToken)
+	if arkoseToken != "" {
+		req.Header.Set("Openai-Sentinel-Arkose-Token", arkoseToken)
 	}
 	if chat_token != "" {
 		req.Header.Set("Openai-Sentinel-Chat-Requirements-Token", chat_token)
@@ -241,6 +269,8 @@ func sendConversationRequest(c *gin.Context, request chatgpt.CreateConversationR
 	if proofToken != "" {
 		req.Header.Set("Openai-Sentinel-Proof-Token", proofToken)
 	}
+	req.Header.Set("Origin", api.ChatGPTApiUrlPrefix)
+	req.Header.Set("Referer", api.ChatGPTApiUrlPrefix+"/")
 	resp, err := api.Client.Do(req)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, api.ReturnMessage(err.Error()))
@@ -276,6 +306,7 @@ func GetImageSource(wg *sync.WaitGroup, url string, prompt string, token string,
 		request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-did="+api.OAIDID+";")
 		request.Header.Set("Oai-Device-Id", api.OAIDID)
 	}
+	request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-dm-tgt-c-240329=2024-04-02;")
 	request.Header.Set("User-Agent", api.UserAgent)
 	request.Header.Set("Accept", "*/*")
 	if token != "" {
@@ -313,10 +344,10 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 	var original_response ChatGPTResponse
 	var isRole = true
 	var waitSource = false
-	var isEnd = false
 	var imgSource []string
 	var isWSS = false
 	var convId string
+	var msgId string
 	var respId string
 	var wssUrl string
 	var connInfo *api.ConnInfo
@@ -432,11 +463,18 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 			if original_response.Message.Metadata.MessageType != "next" && original_response.Message.Metadata.MessageType != "continue" || !strings.HasSuffix(original_response.Message.Content.ContentType, "text") {
 				continue
 			}
+			if original_response.Message.Content.ContentType == "text" && original_response.Message.ID != msgId {
+				if msgId == "" && original_response.Message.Content.Parts[0].(string) == "" {
+					msgId = original_response.Message.ID
+				} else {
+					continue
+				}
+			}
 			if original_response.Message.EndTurn != nil {
 				if waitSource {
 					waitSource = false
 				}
-				isEnd = true
+				msgId = ""
 			}
 			if len(original_response.Message.Metadata.Citations) != 0 {
 				r := []rune(original_response.Message.Content.Parts[0].(string))
@@ -471,7 +509,7 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 				continue
 			}
 			if original_response.Message.Content.ContentType == "multimodal_text" {
-				apiUrl := "https://chat.openai.com/backend-api/files/"
+				apiUrl := api.ChatGPTApiUrlPrefix+"/backend-api/files/"
 				FILES_REVERSE_PROXY := os.Getenv("FILES_REVERSE_PROXY")
 				if FILES_REVERSE_PROXY != "" {
 					apiUrl = FILES_REVERSE_PROXY
@@ -500,11 +538,7 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 				response_string = ConvertToString(&original_response, &previous_text, isRole)
 			}
 			if response_string == "" {
-				if isEnd {
-					goto endProcess
-				} else {
-					continue
-				}
+				continue
 			}
 			if response_string == "【" {
 				waitSource = true
@@ -517,7 +551,6 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 					return "", nil
 				}
 			}
-		endProcess:
 			// Flush the response writer buffer to ensure that the client receives each line as it's written
 			c.Writer.Flush()
 
@@ -527,19 +560,25 @@ func Handler(c *gin.Context, response *http.Response, token string, uuid string,
 				}
 				finish_reason = original_response.Message.Metadata.FinishDetails.Type
 			}
-			if isEnd {
-				if stream {
-					final_line := StopChunk(finish_reason)
-					c.Writer.WriteString("data: " + final_line.String() + "\n\n")
-				}
+		} else {
+			if stream {
+				final_line := StopChunk(finish_reason)
+				c.Writer.WriteString("data: " + final_line.String() + "\n\n")
+			}
+			if isWSS {
 				break
 			}
 		}
 	}
+	respText := strings.Join(imgSource, "")
+ 	if respText != "" {
+ 		respText += "\n"
+ 	}
+ 	respText += previous_text.Text
 	if !max_tokens {
-		return strings.Join(imgSource, "") + previous_text.Text, nil
+		return respText, nil
 	}
-	return strings.Join(imgSource, "") + previous_text.Text, &ContinueInfo{
+	return respText, &ContinueInfo{
 		ConversationID: original_response.ConversationID,
 		ParentID:       original_response.Message.ID,
 	}
@@ -554,7 +593,7 @@ type urlAttr struct {
 }
 
 func getURLAttribution(access_token string, puid string, deviceId string, url string) string {
-	request, err := chatgpt.NewRequest(http.MethodPost, "https://chat.openai.com/backend-api/attributions", bytes.NewBuffer([]byte(`{"urls":["`+url+`"]}`)), access_token, deviceId)
+	request, err := chatgpt.NewRequest(http.MethodPost, api.ChatGPTApiUrlPrefix+"/backend-api/attributions", bytes.NewBuffer([]byte(`{"urls":["`+url+`"]}`)), access_token, deviceId)
 	if err != nil {
 		return ""
 	}

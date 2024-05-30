@@ -3,6 +3,44 @@
 # 此为个人维护的魔改版，相比原版，有以下改动/区别
 Docker image: maxduke/go-chatgpt-api:latest
 
+## 20240527
+- 尝试修复autoContiune, 增加环境变量
+  - AUTO_CONTINUE - 默认 false
+
+## 20240524
+- 增加环境变量
+  - POW_RETRY_TIMES - POW难度太高时，尝试重新获取POW种子的次数，默认0
+  - POW_MAX_DIFFICULTY - POW最高难度设定，高于次难度将重试获取POW种子，默认"000032"
+
+## 20240523
+- 调整POW算法
+- 增加环境变量
+  - HARDWARE - 整数型，CPU核心数+屏幕分辨率高度+屏幕分辨率宽度。 不填则随机
+  - POW_MAX_CALC_TIMES - 整数型，默认500000次。 CPU运算快的可以适当提高，减少403错误的概率
+
+## 20240522
+- 调整生成刷新 deviceID 逻辑
+- 增加log: POW difficulty
+- 更新POW算法 https://github.com/xqdoo00o/ChatGPT-to-API/commit/e69e3d8ab3de295eec7a73551fffdb3b9ce83b1b
+- 在conversation payload中添加了一些新的字段，跟官网同步
+
+## 20240520
+- TEST: 尝试强制使用SSE，从而避免WSS的各种问题 （效果未知）
+- 从request payload中移除arkoseToken （现在官网只在request header中有）
+
+## 20240514
+add gpt-4o support for imitate
+
+## 20240507
+调整backend域名  chat.openai.com => chatgpt.com
+
+可能需要重新抓取har
+
+## 20240506
+调整POW以及更新部分接口域名
+
+参照 https://github.com/xqdoo00o/ChatGPT-to-API/compare/2b6ea6e2208f11fbdf760ba23c1f704993901242...85aafb4cd9af1ed09e2120abc9bdae42bbacd271
+
 ## 20240503
 后续计划移除imitate相关接口，有chat2api的需求的建议使用熊猫大佬的项目：
 
