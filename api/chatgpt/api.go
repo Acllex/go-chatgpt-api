@@ -38,7 +38,8 @@ var (
 	answers             = map[string]string{}
 	timeLocation, _     = time.LoadLocation("Asia/Shanghai")
 	timeLayout          = "Mon Jan 2 2006 15:04:05"
-	cachedHardware = 0
+	cachedHardware      = 0
+	cachedSid           = uuid.NewString()
 	cachedScripts       = []string{}
 	cachedDpl           = ""
 	cachedRequireProof = ""
@@ -375,10 +376,18 @@ func CreateConversation(c *gin.Context) {
 		authHeader = strings.Replace(authHeader, "Bearer ", "", 1)
 	}
 	chat_require := CheckRequire(authHeader, api.OAIDID)
+	if chat_require == nil {
+		logger.Error("unable to check chat requirement")
+		return
+	}
 	for i := 0; i < PowRetryTimes; i++ {		
 		if chat_require.Proof.Required && chat_require.Proof.Difficulty <= PowMaxDifficulty {
 			logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, PowRetryTimes))
 			chat_require = CheckRequire(authHeader, api.OAIDID)
+			if chat_require == nil {
+				logger.Error("unable to check chat requirement")
+				return
+			}
 		} else {
 			break
 		}
@@ -619,10 +628,18 @@ func handleConversationResponse(c *gin.Context, resp *http.Response, request Cre
 			WebsocketRequestId: uuid.NewString(),
 		}
 		chat_require := CheckRequire(accessToken, deviceId)
+		if chat_require == nil {
+			logger.Error("unable to check chat requirement")
+			return
+		}
 		for i := 0; i < PowRetryTimes; i++ {		
 			if chat_require.Proof.Required && chat_require.Proof.Difficulty <= PowMaxDifficulty {
 				logger.Warn(fmt.Sprintf("Proof of work difficulty too high: %s. Retrying... %d/%d ", chat_require.Proof.Difficulty, i + 1, PowRetryTimes))
 				chat_require = CheckRequire(accessToken, api.OAIDID)
+				if chat_require == nil {
+					logger.Error("unable to check chat requirement")
+					return
+				}
 			} else {
 				break
 			}
@@ -659,7 +676,6 @@ func NewRequest(method string, url string, body io.Reader, token string, deviceI
 		request.Header.Set("Oai-Device-Id", deviceId)
 	}
 	request.Header.Set("Oai-Language", api.Language)
-	request.Header.Set("Cookie", request.Header.Get("Cookie")+"oai-dm-tgt-c-240329=2024-04-02;")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -918,7 +934,7 @@ func getConfig() []interface{} {
 	documentKey := documentKeys[rand.Intn(len(documentKeys))]
 	rand.New(rand.NewSource(time.Now().UnixNano()))
 	windowKey := windowKeys[rand.Intn(len(windowKeys))]
-	return []interface{}{cachedHardware, getParseTime(), int64(4294705152), 0, api.UserAgent, script, cachedDpl, api.Language, api.Language+","+api.Language[:2], 0, navigatorKey, documentKey, windowKey, timeNum}
+	return []interface{}{cachedHardware, getParseTime(), int64(4294705152), 0, api.UserAgent, script, cachedDpl, api.Language, api.Language+","+api.Language[:2], 0, navigatorKey, documentKey, windowKey, timeNum, cachedSid}
 }
 
 func CalcProofToken(require *ChatRequire) string {
